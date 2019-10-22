@@ -105,6 +105,34 @@ impl Signer {
         hasher.finish()
     }
 
+    pub fn signature_data<H: SgxHashOps>(self) -> Vec<u8> {
+        let mut sig = Sigstruct {
+            header: SIGSTRUCT_HEADER1,
+            vendor: 0,
+            date: self.date,
+            header2: SIGSTRUCT_HEADER2,
+            swdefined: self.swdefined,
+            _reserved1: [0; 84],
+            modulus: [0; 384],
+            exponent: 3,
+            signature: [0; 384],
+            miscselect: self.miscselect,
+            miscmask: self.miscmask,
+            _reserved2: [0; 20],
+            attributes: self.attributes,
+            attributemask: self.attributemask,
+            enclavehash: self.enclavehash.hash,
+            _reserved3: [0; 32],
+            isvprodid: self.isvprodid,
+            isvsvn: self.isvsvn,
+            _reserved4: [0; 12],
+            q1: [0; 384],
+            q2: [0; 384],
+        };
+        let data = sig.signature_data();
+        [data.0, data.1].concat()
+    }
+
     /// # Panics
     ///
     /// Panics if key is not 3072 bits. Panics if the public exponent of key is not 3.
@@ -135,8 +163,50 @@ impl Signer {
             q2: [0; 384],
         };
 
-        let (s, q1, q2) = try!(key.sign_sha256_pkcs1v1_5_with_q1_q2(Self::sighash::<H>(&sig)));
+        let (s, q1, q2) = key.sign_sha256_pkcs1v1_5_with_q1_q2(Self::sighash::<H>(&sig))?;
         let n = key.n();
+
+        // Pad to 384 bytes
+        (&mut sig.modulus[..]).write_all(&n).unwrap();
+        (&mut sig.signature[..]).write_all(&s).unwrap();
+        (&mut sig.q1[..]).write_all(&q1).unwrap();
+        (&mut sig.q2[..]).write_all(&q2).unwrap();
+
+        Ok(sig)
+    }
+
+    /// # Panics
+    ///
+    /// Panics if key is not 3072 bits. Panics if the public exponent of key is not 3.
+    pub fn catsign<K: SgxRsaOps>(self, sign: Vec<u8>, pkey: &K) -> Result<Sigstruct, K::Error> {
+        Self::check_key(pkey);
+
+        let mut sig = Sigstruct {
+            header: SIGSTRUCT_HEADER1,
+            vendor: 0,
+            date: self.date,
+            header2: SIGSTRUCT_HEADER2,
+            swdefined: self.swdefined,
+            _reserved1: [0; 84],
+            modulus: [0; 384],
+            exponent: 3,
+            signature: [0; 384],
+            miscselect: self.miscselect,
+            miscmask: self.miscmask,
+            _reserved2: [0; 20],
+            attributes: self.attributes,
+            attributemask: self.attributemask,
+            enclavehash: self.enclavehash.hash,
+            _reserved3: [0; 32],
+            isvprodid: self.isvprodid,
+            isvsvn: self.isvsvn,
+            _reserved4: [0; 12],
+            q1: [0; 384],
+            q2: [0; 384],
+        };
+
+        let (s, q1, q2) = try!(pkey.signature_with_q1_q2(sign));
+        let n = pkey.n();
 
         // Pad to 384 bytes
         (&mut sig.modulus[..]).write_all(&n).unwrap();

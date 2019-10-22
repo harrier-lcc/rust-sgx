@@ -34,6 +34,14 @@ pub trait SgxRsaOps {
         hash: H,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Self::Error>;
 
+    /// Generate `(s, q1, q2)` format with signature provided.
+    ///
+    /// Supply `sig` in little-endian format.
+    fn signature_with_q1_q2(
+        &self,
+        sig: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Self::Error>;
+
     /// Verify an RSASSA-PKCS1-v1_5 signature `s` over a SHA256 hash.
     ///
     /// Supply `s` in little-endian format.
@@ -136,6 +144,44 @@ mod openssl {
                     r
                 }
             };
+
+            // Compute Q1 and Q2
+            let mut s_2 = BigNum::new()?;
+            let mut s_3 = BigNum::new()?;
+            let mut q1 = BigNum::new()?;
+            let mut tmp1 = BigNum::new()?;
+            let mut tmp2 = BigNum::new()?;
+            let mut tmp3 = BigNum::new()?;
+            let mut q2 = BigNum::new()?;
+
+            let mut ctx = BigNumContext::new()?;
+            let s = BigNum::from_slice(&s_vec)?;
+            let n = self.n();
+            s_2.sqr(&s, &mut ctx)?;
+            q1.checked_div(&s_2, &n, &mut ctx)?;
+
+            s_3.checked_mul(&s_2, &s, &mut ctx)?;
+            tmp1.checked_mul(&q1, &s, &mut ctx)?;
+            tmp2.checked_mul(&tmp1, &n, &mut ctx)?;
+            tmp3.checked_sub(&s_3, &tmp2)?;
+            q2.checked_div(&tmp3, &n, &mut ctx)?;
+            let mut q1 = q1.to_vec();
+            let mut q2 = q2.to_vec();
+
+            // Return in little-endian format
+            q1.reverse();
+            q2.reverse();
+            s_vec.reverse();
+            Ok((s_vec, q1, q2))
+        }
+
+        fn signature_with_q1_q2(
+            &self,
+            sig: Vec<u8>,
+        ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Self::Error> {
+            // Reverse back to big endian
+            let mut s_vec = sig;
+            s_vec.reverse();
 
             // Compute Q1 and Q2
             let mut s_2 = BigNum::new()?;

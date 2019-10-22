@@ -117,11 +117,13 @@ fn args_desc<'a>() -> clap::App<'a, 'a> {
         .arg(Arg::with_name("date")                               .long("date")      .value_name("YYYYMMDD").validator(date_validate)   .help("Sets the DATE field (default: today)"))
         .arg(Arg::with_name("isvprodid")               .short("p").long("isvprodid") .takes_value(true)     .validator(num_validate)    .help("Sets the ISVPRODID field (default: 0)"))
         .arg(Arg::with_name("isvsvn")                  .short("v").long("isvsvn")    .takes_value(true)     .validator(num_validate)    .help("Sets the ISVSVN field (default: 0)"))
-        .arg(Arg::with_name("key-file")                .short("k").long("key")       .value_name("FILE")    .required(true)             .help("Sets the path to the PEM-encoded RSA private key"))
-        .arg(Arg::with_name("verifykey")               .short("V").long("resign-verify").value_name("FILE")                             .help("Verify the output file is a correct signature using the specified PEM-encoded RSA private key"))
+        .arg(Arg::with_name("key-file")                .short("k").long("key")       .value_name("FILE")                                .help("Sets the path to the PEM-encoded RSA private key"))
+        .arg(Arg::with_name("gendata")                            .long("gendata")                                                      .help("Generate key signing material (used in two-step signing flow)"))
+        .arg(Arg::with_name("catsign")                            .long("catsign")   .value_name("SIGN_FILE")                           .help("Construct SIGSTRUCT from signature (used in two-step signing flow)"))
+        .arg(Arg::with_name("verifykey")               .short("V").long("resign-verify").value_name("FILE")                             .help("Verify the output file is a correct signature using the specified PEM-encoded RSA public key"))
         .arg(Arg::with_name("input-hash")                         .long("in-hash")                                                      .help("<input> specifies the ENCLAVEHASH field directly, instead of an SGXS file"))
         .arg(Arg::with_name("input")                                                                        .required(true)             .help("The enclave SGXS file that will be hashed"))
-        .arg(Arg::with_name("output")                                                                       .required(true)             .help("The output SIGSTRUCT file"))
+        .arg(Arg::with_name("output")                                                                       .required(true)             .help("The output SIGSTRUCT / signing material file"))
         .after_help("NUMERIC ARGUMENTS:
     Unsigned values only. It is possible to specify hexadecimal numbers using
     the 0x prefix.
@@ -131,7 +133,7 @@ MISCSELECT / ATTRIBUTES MASKS:
     the same value will be used twice.")
 }
 
-fn do_sign<'a>(matches: &clap::ArgMatches<'a>, key: &PKey<pkey::Private>) -> Sigstruct {
+fn prepare_signer<'a>(matches: &clap::ArgMatches<'a>) -> Signer {
     let enclavehash = if matches.is_present("input-hash") {
         let s = matches.value_of("input").unwrap();
         hash_validate(s).unwrap();
@@ -205,23 +207,61 @@ fn do_sign<'a>(matches: &clap::ArgMatches<'a>, key: &PKey<pkey::Private>) -> Sig
             date[6..8].parse::<u8>().unwrap(),
         );
     }
+    signer
+}
 
+fn do_sign<'a>(matches: &clap::ArgMatches<'a>, key: &PKey<pkey::Private>) -> Sigstruct {
+    let signer = prepare_signer(matches);
     signer
         .sign::<_, Hasher>(&*key.rsa().unwrap())
         .expect("Error during signing operation")
+}
+
+fn gendata<'a>(matches: &clap::ArgMatches<'a>) -> Vec<u8> {
+    let signer = prepare_signer(matches);
+    signer.signature_data::<Hasher>()
 }
 
 fn main() {
     let matches = args_desc().get_matches();
 
     let mut pem = vec![];
-    File::open(matches.value_of("key-file").unwrap())
-        .expect("Unable to open input key file")
-        .read_to_end(&mut pem)
-        .expect("Unable to read input key file");
-    let key = PKey::private_key_from_pem(&pem).unwrap();
-
-    let sig = do_sign(&matches, &key);
+    let sig;
+    if matches.is_present("key-file") {
+        File::open(matches.value_of("key-file").unwrap())
+            .expect("Unable to open input key file")
+            .read_to_end(&mut pem)
+            .expect("Unable to read input key file");
+        let key = PKey::private_key_from_pem(&pem).unwrap();
+        sig = do_sign(&matches, &key);
+    } else if matches.is_present("gendata") {
+        let signature_data = gendata(&matches);
+        File::create(matches.value_of("output").unwrap())
+            .expect("Unable to open output file")
+            .write_all(signature_data.as_ref())
+            .expect("Unable to write output file");
+        return
+    } else if matches.is_present("catsign") {
+        let mut sign = vec![];
+        File::open(matches.value_of("catsign").unwrap())
+            .expect("Unable to open input signature file")
+            .read_to_end(&mut sign)
+            .expect("Unable to read input signature file");
+        match matches.value_of("verifykey") {
+            Some(vrk) => {
+                File::open(vrk)
+                .expect("Unable to open input verify key file")
+                .read_to_end(&mut pem)
+                .expect("Unable to read input verify key file");
+                let key = PKey::public_key_from_pem(&pem).expect("Unable to read input verify key file");
+                let signer = prepare_signer(&matches);
+                sig = signer.catsign(sign, &*key.rsa().unwrap()).expect("Error during signing operation");
+            }
+            None => panic!("catsign requires verifykey!")
+        }
+    } else {
+        panic!("Must select one operation!")
+    }
 
     if let Some(vrk) = matches.value_of("verifykey") {
         let mut pem = vec![];

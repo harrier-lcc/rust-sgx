@@ -22,6 +22,7 @@ use regex::Regex;
 
 use sgx_isa::{AttributesFlags, Miscselect, Sigstruct};
 use sgxs::sigstruct::{self, EnclaveHash, Signer};
+use sgxs::crypto::Hash;
 
 fn write_sigstruct(path: &str, sig: Sigstruct) {
     File::create(path)
@@ -120,6 +121,7 @@ fn args_desc<'a>() -> clap::App<'a, 'a> {
         .arg(Arg::with_name("key-file")                .short("k").long("key")       .value_name("FILE")                                .help("Sets the path to the PEM-encoded RSA private key"))
         .arg(Arg::with_name("gendata")                            .long("gendata")                                                      .help("Generate key signing material (used in two-step signing flow)"))
         .arg(Arg::with_name("catsign")                            .long("catsign")   .value_name("SIGN_FILE")                           .help("Construct SIGSTRUCT from signature (used in two-step signing flow)"))
+        .arg(Arg::with_name("pubkey")                             .long("pubkey")    .value_name("PUBKEY")                              .help("Public key of the signing key (used in catsign)"))
         .arg(Arg::with_name("verifykey")               .short("V").long("resign-verify").value_name("FILE")                             .help("Verify the output file is a correct signature using the specified PEM-encoded RSA public key"))
         .arg(Arg::with_name("input-hash")                         .long("in-hash")                                                      .help("<input> specifies the ENCLAVEHASH field directly, instead of an SGXS file"))
         .arg(Arg::with_name("input")                                                                        .required(true)             .help("The enclave SGXS file that will be hashed"))
@@ -217,7 +219,7 @@ fn do_sign<'a>(matches: &clap::ArgMatches<'a>, key: &PKey<pkey::Private>) -> Sig
         .expect("Error during signing operation")
 }
 
-fn gendata<'a>(matches: &clap::ArgMatches<'a>) -> Vec<u8> {
+fn gendata<'a>(matches: &clap::ArgMatches<'a>) -> Hash {
     let signer = prepare_signer(matches);
     signer.signature_data::<Hasher>()
 }
@@ -227,6 +229,7 @@ fn main() {
 
     let mut pem = vec![];
     let sig;
+    let enclavehash;
     if matches.is_present("key-file") {
         File::open(matches.value_of("key-file").unwrap())
             .expect("Unable to open input key file")
@@ -234,6 +237,9 @@ fn main() {
             .expect("Unable to read input key file");
         let key = PKey::private_key_from_pem(&pem).unwrap();
         sig = do_sign(&matches, &key);
+        write_sigstruct(matches.value_of("output").unwrap(), sig.clone());
+        enclavehash = sig.enclavehash.clone();
+        println!("ENCLAVEHASH: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} (OK)",enclavehash[0],enclavehash[1],enclavehash[2],enclavehash[3],enclavehash[4],enclavehash[5],enclavehash[6],enclavehash[7],enclavehash[8],enclavehash[9],enclavehash[10],enclavehash[11],enclavehash[12],enclavehash[13],enclavehash[14],enclavehash[15],enclavehash[16],enclavehash[17],enclavehash[18],enclavehash[19],enclavehash[20],enclavehash[21],enclavehash[22],enclavehash[23],enclavehash[24],enclavehash[25],enclavehash[26],enclavehash[27],enclavehash[28],enclavehash[29],enclavehash[30],enclavehash[31]);
     } else if matches.is_present("gendata") {
         let signature_data = gendata(&matches);
         File::create(matches.value_of("output").unwrap())
@@ -247,7 +253,7 @@ fn main() {
             .expect("Unable to open input signature file")
             .read_to_end(&mut sign)
             .expect("Unable to read input signature file");
-        match matches.value_of("verifykey") {
+        match matches.value_of("pubkey") {
             Some(vrk) => {
                 File::open(vrk)
                 .expect("Unable to open input verify key file")
@@ -256,11 +262,12 @@ fn main() {
                 let key = PKey::public_key_from_pem(&pem).expect("Unable to read input verify key file");
                 let signer = prepare_signer(&matches);
                 sig = signer.catsign(sign, &*key.rsa().unwrap()).expect("Error during signing operation");
+                write_sigstruct(matches.value_of("output").unwrap(), sig.clone());
+                enclavehash = sig.enclavehash.clone();
+                println!("ENCLAVEHASH: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} (OK)",enclavehash[0],enclavehash[1],enclavehash[2],enclavehash[3],enclavehash[4],enclavehash[5],enclavehash[6],enclavehash[7],enclavehash[8],enclavehash[9],enclavehash[10],enclavehash[11],enclavehash[12],enclavehash[13],enclavehash[14],enclavehash[15],enclavehash[16],enclavehash[17],enclavehash[18],enclavehash[19],enclavehash[20],enclavehash[21],enclavehash[22],enclavehash[23],enclavehash[24],enclavehash[25],enclavehash[26],enclavehash[27],enclavehash[28],enclavehash[29],enclavehash[30],enclavehash[31]);
             }
-            None => panic!("catsign requires verifykey!")
+            None => panic!("catsign requires pubkey!")
         }
-    } else {
-        panic!("Must select one operation!")
     }
 
     if let Some(vrk) = matches.value_of("verifykey") {
@@ -272,18 +279,10 @@ fn main() {
         let key = PKey::public_key_from_pem(&pem).expect("Unable to read input verify key file");
         let oldsig =
             sigstruct::read(&mut File::open(matches.value_of("output").unwrap()).unwrap()).unwrap();
-        if sig.enclavehash != oldsig.enclavehash {
-            panic!("ENCLAVEHASH mismatch");
-        }
         sigstruct::verify::<_, Hasher>(&oldsig, &*key.rsa().unwrap())
             .expect("Input signature verification failed");
     }
 
-    let enclavehash = sig.enclavehash.clone();
-
-    write_sigstruct(matches.value_of("output").unwrap(), sig);
-
-    println!("ENCLAVEHASH: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} (OK)",enclavehash[0],enclavehash[1],enclavehash[2],enclavehash[3],enclavehash[4],enclavehash[5],enclavehash[6],enclavehash[7],enclavehash[8],enclavehash[9],enclavehash[10],enclavehash[11],enclavehash[12],enclavehash[13],enclavehash[14],enclavehash[15],enclavehash[16],enclavehash[17],enclavehash[18],enclavehash[19],enclavehash[20],enclavehash[21],enclavehash[22],enclavehash[23],enclavehash[24],enclavehash[25],enclavehash[26],enclavehash[27],enclavehash[28],enclavehash[29],enclavehash[30],enclavehash[31]);
 }
 
 #[cfg(test)]

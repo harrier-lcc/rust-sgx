@@ -144,7 +144,6 @@ mod openssl {
                     r
                 }
             };
-
             // Compute Q1 and Q2
             let mut s_2 = BigNum::new()?;
             let mut s_3 = BigNum::new()?;
@@ -179,10 +178,7 @@ mod openssl {
             &self,
             sig: Vec<u8>,
         ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Self::Error> {
-            // Reverse back to big endian
             let mut s_vec = sig;
-            s_vec.reverse();
-
             // Compute Q1 and Q2
             let mut s_2 = BigNum::new()?;
             let mut s_3 = BigNum::new()?;

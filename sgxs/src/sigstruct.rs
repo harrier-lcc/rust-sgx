@@ -105,7 +105,7 @@ impl Signer {
         hasher.finish()
     }
 
-    pub fn signature_data<H: SgxHashOps>(self) -> Vec<u8> {
+    pub fn signature_data<H: SgxHashOps>(self) -> Hash {
         let mut sig = Sigstruct {
             header: SIGSTRUCT_HEADER1,
             vendor: 0,
@@ -129,8 +129,7 @@ impl Signer {
             q1: [0; 384],
             q2: [0; 384],
         };
-        let data = sig.signature_data();
-        [data.0, data.1].concat()
+        Self::sighash::<H>(&sig)
     }
 
     /// # Panics
@@ -204,7 +203,6 @@ impl Signer {
             q1: [0; 384],
             q2: [0; 384],
         };
-
         let (s, q1, q2) = try!(pkey.signature_with_q1_q2(sign));
         let n = pkey.n();
 
